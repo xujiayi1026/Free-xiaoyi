@@ -384,7 +384,7 @@
     <!-- AI 回复引擎设置面板 -->
     <van-popup v-model:show="showLLM" position="bottom" round teleport="#app" :style="{ padding: '18px 20px 26px' }">
       <div class="text-[16px] font-bold text-ink">小益的回复引擎</div>
-      <p class="mt-1 text-[12px] leading-relaxed text-[#9C8F7B]">接入真实大模型，回复自然不机械；默认免注册免费直连</p>
+      <p class="mt-1 text-[12px] leading-relaxed text-[#9C8F7B]">接入真实大模型，回复自然不机械；主引擎限流时自动切换备用引擎，配置任一免费 Key 即可长期稳定</p>
 
       <van-radio-group v-model="llmCfg.provider" class="mt-4">
         <div v-for="(p, key) in llmProviders" :key="key" class="llm-opt">
@@ -394,8 +394,8 @@
       </van-radio-group>
 
       <van-field v-if="llmProviders[llmCfg.provider].needKey"
-                 v-model="llmCfg.apiKey" type="password" label="API Key"
-                 placeholder="粘贴你的免费 API Key" class="llm-key"></van-field>
+                 v-model="llmCfg.keys[llmCfg.provider]" type="password" label="API Key"
+                 placeholder="粘贴你的免费 API Key（按引擎分别保存）" class="llm-key"></van-field>
 
       <div class="mt-4 flex gap-2.5">
         <van-button block plain round class="!h-10 !text-[14px]" @click="showLLM = false">取消</van-button>
@@ -468,44 +468,61 @@
      ========================================================= */
   var LLM_PROVIDERS = {
     pollinations: {
-      label: 'Pollinations · 免费直连（推荐）',
+      label: 'Pollinations · 免费直连（零配置）',
       url: 'https://text.pollinations.ai/openai',
-      model: 'openai',
+      models: ['openai', 'openai-fast', 'mistral', 'llama'],
       needKey: false,
-      help: '免注册、免 Key、完全免费，浏览器直连即可对话（推荐用于演示）。走公共通道，偶尔回复稍慢。'
+      help: '免注册、免 Key，浏览器直连即可对话。匿名额度较小、聊多了会短暂限流——小益会自动换模型重试、冷却后自动恢复；要更稳建议配一个下方的免费 Key。'
+    },
+    zhipu: {
+      label: '智谱 GLM-4-Flash · 国内免费（最稳定）',
+      url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+      models: ['glm-4-flash'],
+      needKey: true,
+      help: 'open.bigmodel.cn 手机号注册即领免费 API Key，glm-4-flash 永久免费、国内直连快，推荐配置。'
+    },
+    deepseek: {
+      label: 'DeepSeek · 便宜好用（按量计费）',
+      url: 'https://api.deepseek.com/chat/completions',
+      models: ['deepseek-chat'],
+      needKey: true,
+      help: 'platform.deepseek.com 创建 Key。按量计费非常便宜：一轮对话约几厘钱，中文能力强、稳定。'
     },
     groq: {
       label: 'Groq · 免费需 Key',
       url: 'https://api.groq.com/openai/v1/chat/completions',
-      model: 'llama-3.3-70b-versatile',
+      models: ['llama-3.3-70b-versatile'],
       needKey: true,
-      help: '到 console.groq.com 免费注册即可领取 API Key，回复速度快、质量高。'
+      help: '到 console.groq.com 用 GitHub 登录即可免费创建 API Key，回复速度快、质量高。'
     },
     siliconflow: {
       label: '硅基流动 · 国内免费',
       url: 'https://api.siliconflow.cn/v1/chat/completions',
-      model: 'Qwen/Qwen2.5-7B-Instruct',
+      models: ['Qwen/Qwen2.5-7B-Instruct'],
       needKey: true,
-      help: '国内直连稳定，platform.siliconflow.cn 注册即送免费额度。'
+      help: 'platform.siliconflow.cn 注册即送免费额度，国内直连稳定（模型以平台标注免费的为准）。'
     }
   };
 
   function loadLLM() {
-    var def = { provider: 'pollinations', apiKey: '' };
+    var def = { provider: 'pollinations', keys: { pollinations: '', zhipu: '', deepseek: '', groq: '', siliconflow: '' } };
     try {
       var raw = localStorage.getItem('xy_llm');
-      if (raw) def = Object.assign(def, JSON.parse(raw));
+      if (raw) {
+        var saved = JSON.parse(raw);
+        if (saved.provider && LLM_PROVIDERS[saved.provider]) def.provider = saved.provider;
+        if (saved.keys) Object.assign(def.keys, saved.keys);
+        else if (saved.apiKey) def.keys[def.provider] = saved.apiKey;   // 兼容旧版单 Key
+      }
     } catch (e) {}
-    if (!LLM_PROVIDERS[def.provider]) def.provider = 'pollinations';
     return def;
   }
   var llmCfg = Vue.reactive(loadLLM());
   var showLLM = Vue.ref(false);
   var llmHelp = Vue.computed(function () { return LLM_PROVIDERS[llmCfg.provider].help; });
-  function llmReady() {
-    var p = LLM_PROVIDERS[llmCfg.provider];
-    return !p.needKey || !!String(llmCfg.apiKey).trim();
-  }
+  function engineKey(name) { return String((llmCfg.keys && llmCfg.keys[name]) || '').trim(); }
+  function engineReady(name) { var p = LLM_PROVIDERS[name]; return !p.needKey || !!engineKey(name); }
+  function llmReady() { return engineReady(llmCfg.provider); }
   function saveLLM() {
     try { localStorage.setItem('xy_llm', JSON.stringify(llmCfg)); } catch (e) {}
     showLLM.value = false;
@@ -597,19 +614,32 @@
     return fallback[Math.floor(Math.random() * fallback.length)];
   }
 
-  /* ---------- 真实大模型接口（OpenAI 兼容协议） ---------- */
-  function callLLM(userText, mode) {
-    var p = LLM_PROVIDERS[llmCfg.provider];
+  /* ---------- 真实大模型接口（OpenAI 兼容协议，多引擎自动降级） ---------- */
+  var llmToastShown = false;      // 本会话只提示一次失败，避免刷屏
+  var pllnsQuotaUntil = 0;        // Pollinations 402 冷却截止时间（5 分钟）
+
+  // 引擎尝试顺序：当前引擎 -> 其他已配置 Key 的引擎 -> Pollinations 免 Key 兜底
+  function engineCandidates() {
+    var order = [llmCfg.provider];
+    Object.keys(LLM_PROVIDERS).forEach(function (k) {
+      if (order.indexOf(k) < 0 && k !== 'pollinations' && engineReady(k)) order.push(k);
+    });
+    if (order.indexOf('pollinations') < 0) order.push('pollinations');
+    return order.slice(0, 3);
+  }
+
+  function postChat(engineName, model, userText, mode) {
+    var p = LLM_PROVIDERS[engineName];
     var history = store.messages.slice(-12).map(function (m) {
       return { role: m.role === 'ai' ? 'assistant' : 'user', content: m.text };
     });
     history.push({ role: 'user', content: userText });
 
     var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var timer = ctl ? setTimeout(function () { ctl.abort(); }, 30000) : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, 15000) : null;
     var headers = { 'Content-Type': 'application/json' };
-    if (String(llmCfg.apiKey).trim()) headers['Authorization'] = 'Bearer ' + String(llmCfg.apiKey).trim();
-
+    var key = engineKey(engineName);
+    if (key) headers['Authorization'] = 'Bearer ' + key;
     function done() { if (timer) clearTimeout(timer); }
 
     return fetch(p.url, {
@@ -617,22 +647,52 @@
       headers: headers,
       signal: ctl ? ctl.signal : undefined,
       body: JSON.stringify({
-        model: p.model,
+        model: model,
         messages: [{ role: 'system', content: systemPrompt(mode) }].concat(history),
         temperature: 0.8,
         max_tokens: 600
       })
     }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) { var e = new Error('HTTP ' + r.status); e.httpStatus = r.status; throw e; }
       return r.json();
     }).then(function (d) {
       done();
       var msg = d.choices && d.choices[0] && d.choices[0].message;
-      var text = msg && (msg.content || (msg.choices && msg.choices[0]));
+      var text = msg && msg.content;
       if (!text && d.choices && d.choices[0]) text = d.choices[0].text;
       if (!text || !String(text).trim()) throw new Error('empty content');
       return String(text).trim();
     }, function (err) { done(); throw err; });
+  }
+
+  function callLLM(userText, mode) {
+    var engines = engineCandidates();
+
+    function tryEngine(idx) {
+      if (idx >= engines.length) return Promise.reject(new Error('all engines failed'));
+      var name = engines[idx];
+      var models = LLM_PROVIDERS[name].models || [];
+      if (!models.length) return tryEngine(idx + 1);
+
+      function tryModel(mi) {
+        if (mi >= models.length) return tryEngine(idx + 1);
+        return postChat(name, models[mi], userText, mode).catch(function (err) {
+          var st = err && err.httpStatus;
+          console.warn('[小益] 引擎 ' + name + '/' + models[mi] + ' 失败：', err);
+          if (err && err.name === 'AbortError') return tryEngine(idx + 1);   // 超时：换引擎
+          if ((st === 402 || st === 429) && name === 'pollinations') {
+            if (st === 402) pllnsQuotaUntil = Date.now() + 5 * 60 * 1000;   // 进入冷却
+            return tryModel(mi + 1);                                         // 额度限流：换模型
+          }
+          if ((st >= 500 && st < 600) || String(err.message).indexOf('empty') >= 0) {
+            return tryModel(mi + 1);                                         // 服务端抖动/空回复：换模型
+          }
+          return tryEngine(idx + 1);                                         // 其余（401/403/404 等）：换引擎
+        });
+      }
+      return tryModel(0);
+    }
+    return tryEngine(0);
   }
 
   /* =========================================================
@@ -671,18 +731,21 @@
     if (!delayed) store.typing = true;                   // 即时模式：立即显示正在输入
     scrollBottom();
 
+    function localReply() {
+      return sleep(600 + Math.random() * 500).then(function () { return getAgentReply(text); });
+    }
+    function notice(msg) {
+      if (!llmToastShown) { llmToastShown = true; vant.showToast({ message: msg, duration: 2200 }); }
+    }
     function coreReply() {
-      if (llmReady()) {
-        return callLLM(text, store.chatMode).catch(function (err) {
-          console.warn('[小益] 大模型调用失败，已回退本地模拟：', err);
-          vant.showToast({ message: '大模型暂不可用，小益先本地回你', duration: 1800 });
-          return getAgentReply(text);
-        });
-      }
-      if (LLM_PROVIDERS[llmCfg.provider].needKey) {
-        vant.showToast({ message: '未配置 API Key，先用本地应答', duration: 1800 });
-      }
-      return sleep(700 + Math.random() * 500).then(function () { return getAgentReply(text); });
+      var cooling = llmCfg.provider === 'pollinations' && Date.now() < pllnsQuotaUntil;
+      if (!llmReady()) notice('未配置 API Key，小益先用免费引擎回你');
+      if (cooling) return localReply();                       // 冷却期：静默本地应答，稍后自动恢复
+      return callLLM(text, store.chatMode).catch(function (err) {
+        console.warn('[小益] 所有引擎均失败，已回退本地模拟：', err);
+        notice('小益网络开小差了，先本地陪你聊～');
+        return getAgentReply(text);
+      });
     }
 
     // 延迟模式：先「消失」几分钟（原型为 DELAYED_REPLY_MS），到点后再像朋友一样回消息
