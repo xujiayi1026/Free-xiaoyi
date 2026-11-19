@@ -1,0 +1,8 @@
+# 旧版演示副本（不发布）
+demo/
+
+# 系统 / 编辑器杂项
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
